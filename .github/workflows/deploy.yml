@@ -1,0 +1,72 @@
+name: Build & Deploy Lera Rumaa Dashboard
+
+on:
+  schedule:
+    - cron: '0 */3 * * *' # every 3 hours
+  push:
+    branches: [main]
+  workflow_dispatch: {} # manual "Run workflow" button
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Every knob is passed explicitly — the script has Lera Rumaa defaults, but a
+      # silent fallback to a hardcoded value is exactly how a dashboard ends up
+      # quietly reporting the wrong account.
+      - name: Fetch fresh Meta data + creatives
+        env:
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          META_ACCOUNT_ID: ${{ vars.META_ACCOUNT_ID }}
+          META_API_VERSION: v21.0
+          PROJECT_NAME: Lera Rumaa
+          # start of the Rebuild launch; later launches are picked up automatically
+          MIN_DATE: '2026-09-17'
+          LOOKBACK_DAYS: '365'
+          # Subscribe on pixel «Lera Rumaa_sep» — lives in `conversions`, not `actions`
+          LEAD_TYPE: subscribe_total
+          PREVIEW_FORMAT: INSTAGRAM_STORY
+        run: node scripts/fetch-meta.mjs
+
+      # No CRM step: the ads carry no UTM tags, so CRM rows could not be joined back
+      # to campaigns and ads anyway. See README § «CRM».
+
+      - name: Encrypt dataset with the dashboard password
+        env:
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+        run: node scripts/encrypt-data.mjs
+
+      - run: npm run build
+      # Pages is enabled once out-of-band (`gh api -X POST repos/<repo>/pages
+      # -f build_type=workflow`); `enablement: true` here fails on a fresh repo
+      # because the Actions token cannot create the site.
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
